@@ -1,5 +1,9 @@
 import type { AdapterOptions } from "./types.js";
-import type { CompletionAdapter, CompletionStreamEvent, CompletionTool } from "adminforth";
+import type {
+  CompletionAdapter,
+  CompletionStreamEvent,
+  CompletionTool,
+} from "adminforth";
 import { encoding_for_model, type TiktokenModel } from "tiktoken";
 import type OpenAI from "openai";
 
@@ -9,6 +13,23 @@ type StreamChunkCallback = (
   chunk: string,
   event?: CompletionStreamEvent,
 ) => void | Promise<void>;
+
+type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+
+type CompletionRequestInput = {
+  content: string;
+  maxTokens?: number;
+  outputSchema?: any;
+  reasoningEffort?: ReasoningEffort;
+  tools?: CompletionTool[];
+  onChunk?: StreamChunkCallback;
+};
 
 type ResponseCreateBody = OpenAI.Responses.ResponseCreateParams;
 type OpenAIResponsesSuccess = OpenAI.Responses.Response;
@@ -137,10 +158,10 @@ export default class CompletionAdapterOpenAIResponses
   }
 
   complete = async (
-    content: string,
+    requestOrContent: CompletionRequestInput | string,
     maxTokens = 50,
     outputSchema?: any,
-    reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" = "low",
+    reasoningEffort: ReasoningEffort = "low",
     toolsOrOnChunk?: CompletionTool[] | StreamChunkCallback,
     onChunk?: StreamChunkCallback,
   ): Promise<{
@@ -148,10 +169,29 @@ export default class CompletionAdapterOpenAIResponses
     finishReason?: string;
     error?: string;
   }> => {
+    const request =
+      typeof requestOrContent === "string"
+        ? {
+            content: requestOrContent,
+            maxTokens,
+            outputSchema,
+            reasoningEffort,
+            tools: Array.isArray(toolsOrOnChunk) ? toolsOrOnChunk : undefined,
+            onChunk:
+              typeof toolsOrOnChunk === "function"
+                ? toolsOrOnChunk
+                : onChunk,
+          }
+        : requestOrContent;
+    const {
+      content,
+      maxTokens: requestMaxTokens = 50,
+      outputSchema: requestOutputSchema,
+      reasoningEffort: requestReasoningEffort = "low",
+      tools,
+      onChunk: streamChunkCallback,
+    } = request;
     const model = this.options.model || "gpt-5-nano";
-    const tools = Array.isArray(toolsOrOnChunk) ? toolsOrOnChunk : undefined;
-    const streamChunkCallback =
-      typeof toolsOrOnChunk === "function" ? toolsOrOnChunk : onChunk;
     const isStreaming = typeof streamChunkCallback === "function";
     const extra = this.options.extraRequestBodyParameters;
     let openAiTools: OpenAITool[] | undefined = undefined;
@@ -168,13 +208,13 @@ export default class CompletionAdapterOpenAIResponses
     const body = {
       model,
       input: content,
-      max_output_tokens: maxTokens,
+      max_output_tokens: requestMaxTokens,
       stream: isStreaming,
-      text: outputSchema
+      text: requestOutputSchema
         ? {
             format: {
               type: "json_schema",
-              ...outputSchema,
+              ...requestOutputSchema,
             },
           }
         : {
@@ -183,7 +223,7 @@ export default class CompletionAdapterOpenAIResponses
             },
           },
       reasoning: {
-        effort: reasoningEffort,
+        effort: requestReasoningEffort,
         summary: "auto",
       },
       tools: openAiTools,
