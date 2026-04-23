@@ -1,0 +1,25 @@
+{
+  "name": "@adminforth/completion-adapter-openai-responses",
+  "version": "2.0.19",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && npm version patch",
+    "rollout": "npm run build && npm publish --access public"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "description": "AdminForth completion adapter for the OpenAI Responses API.",
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "openai": "^6.34.0",
+    "tiktoken": "^1.0.22"
+  },
+  "peerDependencies": {
+    "adminforth": "^2.24.0"
+  }
+}
