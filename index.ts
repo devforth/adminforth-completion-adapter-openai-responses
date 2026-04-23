@@ -4,6 +4,9 @@ import type {
   CompletionStreamEvent,
   CompletionTool,
 } from "adminforth";
+import { AIMessage } from "@langchain/core/messages";
+import { ChatOpenAI } from "@langchain/openai";
+import { createMiddleware } from "langchain";
 import { encoding_for_model, type TiktokenModel } from "tiktoken";
 import type OpenAI from "openai";
 
@@ -21,6 +24,8 @@ type ReasoningEffort =
   | "medium"
   | "high"
   | "xhigh";
+
+type AgentModelPurpose = "primary" | "summary";
 
 type CompletionRequestInput = {
   content: string;
@@ -46,6 +51,15 @@ type OpenAIFunctionCall = Extract<
   OpenAI.Responses.ResponseOutputItem,
   { type: "function_call" }
 >;
+
+type OpenAiResponsesMetadata = {
+  id?: string;
+};
+
+type OpenAiResponsesContext = {
+  sessionId: string;
+  turnId: string;
+};
 
 function extractOutputText(data: OpenAIResponsesSuccess): string {
   let text = "";
@@ -127,6 +141,93 @@ function parseSseBlock(block: string) {
   return data ? { event, data } : null;
 }
 
+function getAgentReasoningEffort(
+  purpose: AgentModelPurpose,
+): Exclude<ReasoningEffort, "none"> {
+  return purpose === "summary" ? "minimal" : "low";
+}
+
+function getTurnKey(context: OpenAiResponsesContext) {
+  return `${context.sessionId}:${context.turnId}`;
+}
+
+function getResponseId(message: AIMessage) {
+  const metadata = message.response_metadata as OpenAiResponsesMetadata | undefined;
+  return metadata?.id ?? null;
+}
+
+function getPreviousResponseId(modelSettings?: Record<string, unknown>) {
+  return (modelSettings as { previous_response_id?: string } | undefined)
+    ?.previous_response_id;
+}
+
+function getContinuationMessages<T extends { response_metadata?: unknown }>(
+  messages: T[],
+  previousResponseId: string,
+) {
+  let continuationStartIndex: number | null = null;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+
+    if (
+      AIMessage.isInstance(message) &&
+      (message.response_metadata as OpenAiResponsesMetadata | undefined)?.id ===
+        previousResponseId
+    ) {
+      continuationStartIndex = index + 1;
+      break;
+    }
+  }
+
+  if (continuationStartIndex === null) {
+    return null;
+  }
+
+  return messages.slice(continuationStartIndex);
+}
+
+function createOpenAiResponsesContinuationMiddleware() {
+  const responseIdsByTurn = new Map<string, string>();
+
+  return createMiddleware({
+    name: "OpenAiResponsesContinuationMiddleware",
+    async wrapModelCall(request, handler) {
+      const context = request.runtime.context as OpenAiResponsesContext;
+      const turnKey = getTurnKey(context);
+      const previousResponseId =
+        getPreviousResponseId(request.modelSettings) ??
+        responseIdsByTurn.get(turnKey);
+      const continuationMessages = previousResponseId
+        ? getContinuationMessages(request.messages, previousResponseId)
+        : null;
+
+      const response = (await handler(
+        previousResponseId && continuationMessages
+          ? {
+              ...request,
+              messages: continuationMessages,
+              modelSettings: {
+                ...request.modelSettings,
+                previous_response_id: previousResponseId,
+              },
+            }
+          : request,
+      )) as AIMessage;
+
+      const responseId = getResponseId(response);
+
+      if (responseId) {
+        responseIdsByTurn.set(turnKey, responseId);
+      } else {
+        responseIdsByTurn.delete(turnKey);
+      }
+
+      return response;
+    },
+  });
+}
+
 export default class CompletionAdapterOpenAIResponses
   implements CompletionAdapter
 {
@@ -140,9 +241,9 @@ export default class CompletionAdapterOpenAIResponses
         (this.options.model || "gpt-5-nano") as TiktokenModel,
       );
     } catch (error) {
-      console.warn(
-        `Failed to initialize tiktoken tokenizer for model "${this.options.model}", falling back to "gpt-5-nano". Error:`,
-      );
+      // console.warn(
+      //   `Failed to initialize tiktoken tokenizer for model "${this.options.model}", falling back to "gpt-5-nano". Error:`,
+      // );
       this.encoding = encoding_for_model("gpt-5-nano" as TiktokenModel);
     }
   }
@@ -155,6 +256,35 @@ export default class CompletionAdapterOpenAIResponses
 
   measureTokensCount(content: string): number {
     return this.encoding.encode(content).length;
+  }
+
+  getLangChainAgentSpec(params: {
+    maxTokens: number;
+    purpose: AgentModelPurpose;
+  }) {
+    const extraRequestBodyParameters =
+      (this.options.extraRequestBodyParameters || {}) as Record<string, unknown> & {
+        reasoning?: Record<string, unknown>;
+      };
+    const { reasoning, ...modelKwargs } = extraRequestBodyParameters;
+
+    return {
+      model: new ChatOpenAI({
+        model: this.options.model || "gpt-5-nano",
+        apiKey: this.options.openAiApiKey,
+        useResponsesApi: true,
+        maxTokens: params.maxTokens,
+        reasoning: reasoning ?? {
+          effort: getAgentReasoningEffort(params.purpose),
+          summary: "auto",
+        },
+        modelKwargs,
+      } as any),
+      middleware:
+        params.purpose === "primary"
+          ? [createOpenAiResponsesContinuationMiddleware()]
+          : [],
+    };
   }
 
   complete = async (
