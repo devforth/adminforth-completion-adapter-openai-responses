@@ -14,6 +14,16 @@ export interface AdapterOptions {
   baseUrl?: string;
 
   /**
+   * Forces LangChain agent mode to use the Chat Completions API instead of the
+   * Responses API.
+   *
+   * When omitted, the adapter keeps the current default behavior:
+   * - official OpenAI uses the Responses API
+   * - custom `baseUrl` providers use the Chat Completions API
+   */
+  useComplitionApi?: boolean;
+
+  /**
    * Model name. Go to https://platform.openai.com/docs/models, select model and copy name.
    * Default is `gpt-5-nano`.
    */

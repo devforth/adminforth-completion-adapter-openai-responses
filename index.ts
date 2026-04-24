@@ -268,6 +268,14 @@ export default class CompletionAdapterOpenAIResponses
     return this.options.baseUrl;
   }
 
+  private shouldUseComplitionApi() {
+    if (typeof this.options.useComplitionApi === "boolean") {
+      return this.options.useComplitionApi;
+    }
+
+    return Boolean(this.getConfiguredBaseUrl());
+  }
+
   private shouldDumpRawRequest() {
     return this.options.dumpRawRequest === true;
   }
@@ -350,7 +358,8 @@ export default class CompletionAdapterOpenAIResponses
     const normalizedModelKwargs = { ...modelKwargs };
 
 
-        const clientConfiguration = this.getClientConfiguration();
+    const clientConfiguration = this.getClientConfiguration();
+    const useComplitionApi = this.shouldUseComplitionApi();
     const chatOpenAiOptions: Record<string, unknown> = {
       model: this.options.model || "gpt-5-nano",
       apiKey: this.options.openAiApiKey,
@@ -362,15 +371,10 @@ export default class CompletionAdapterOpenAIResponses
       modelKwargs: normalizedModelKwargs,
     };
 
-    if (!configuredBaseUrl) {
-      chatOpenAiOptions.useResponsesApi = true;
-    } else {
-      chatOpenAiOptions.useResponsesApi = false;
-    }
-
+    chatOpenAiOptions.useResponsesApi = !useComplitionApi;
 
     let supportsResponseContinuation = true;
-    if (configuredBaseUrl) {
+    if (configuredBaseUrl || useComplitionApi) {
       supportsResponseContinuation = false;
     }
 
