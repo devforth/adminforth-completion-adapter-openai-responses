@@ -153,6 +153,17 @@ function getAgentReasoningEffort(
   return purpose === "summary" ? "minimal" : "low";
 }
 
+function buildReasoningConfig(params: {
+  reasoning?: Record<string, unknown>;
+  effort: Exclude<ReasoningEffort, "none"> | ReasoningEffort;
+}) {
+  return {
+    summary: "detailed",
+    effort: params.effort,
+    ...(params.reasoning ?? {}),
+  };
+}
+
 function getTurnKey(context: OpenAiResponsesContext) {
   return `${context.sessionId}:${context.turnId}`;
 }
@@ -364,10 +375,10 @@ export default class CompletionAdapterOpenAIResponses
       model: this.options.model || "gpt-5-nano",
       apiKey: this.options.openAiApiKey,
       maxTokens: params.maxTokens,
-      reasoning: reasoning ?? {
+      reasoning: buildReasoningConfig({
+        reasoning,
         effort: getAgentReasoningEffort(params.purpose),
-        summary: "detailed",
-      },
+      }),
       modelKwargs: normalizedModelKwargs,
     };
 
@@ -427,7 +438,11 @@ export default class CompletionAdapterOpenAIResponses
     } = request;
     const model = this.options.model || "gpt-5-nano";
     const isStreaming = typeof streamChunkCallback === "function";
-    const extra = this.options.extraRequestBodyParameters;
+    const extra =
+      this.options.extraRequestBodyParameters as
+        | (Record<string, unknown> & { reasoning?: Record<string, unknown> })
+        | undefined;
+    const { reasoning: extraReasoning, ...extraWithoutReasoning } = extra ?? {};
     let openAiTools: OpenAITool[] | undefined = undefined;
     if (tools && tools.length > 0) {
       openAiTools = tools.map((tool) => ({
@@ -457,11 +472,13 @@ export default class CompletionAdapterOpenAIResponses
             },
           },
       reasoning: {
-        effort: requestReasoningEffort,
-        summary: "detailed",
+        ...buildReasoningConfig({
+          reasoning: extraReasoning,
+          effort: requestReasoningEffort,
+        }),
       },
       tools: openAiTools,
-      ...extra,
+      ...extraWithoutReasoning,
     } as ResponseCreateBody;
 
     const serializedBody = JSON.stringify(body);
