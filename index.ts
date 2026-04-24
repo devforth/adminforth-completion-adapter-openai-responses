@@ -371,7 +371,7 @@ export default class CompletionAdapterOpenAIResponses
       maxTokens: params.maxTokens,
       reasoning: reasoning ?? {
         effort: getAgentReasoningEffort(params.purpose),
-        summary: "auto",
+        summary: "detailed",
       },
       modelKwargs: normalizedModelKwargs,
     };
@@ -465,7 +465,7 @@ export default class CompletionAdapterOpenAIResponses
           },
       reasoning: {
         effort: requestReasoningEffort,
-        summary: "auto",
+        summary: "detailed",
       },
       tools: openAiTools,
       ...extra,
