@@ -349,25 +349,11 @@ export default class CompletionAdapterOpenAIResponses
     const configuredBaseUrl = this.getConfiguredBaseUrl();
     const normalizedModelKwargs = { ...modelKwargs };
 
-    if (configuredBaseUrl) {
-      const existingText = normalizedModelKwargs.text as Record<string, unknown> | undefined;
-
-      normalizedModelKwargs.text = existingText?.format
-        ? existingText
-        : {
-            ...existingText,
-            format: {
-              type: "text",
-            },
-          };
-    }
 
         const clientConfiguration = this.getClientConfiguration();
-
     const chatOpenAiOptions: Record<string, unknown> = {
       model: this.options.model || "gpt-5-nano",
       apiKey: this.options.openAiApiKey,
-      useResponsesApi: true,
       maxTokens: params.maxTokens,
       reasoning: reasoning ?? {
         effort: getAgentReasoningEffort(params.purpose),
@@ -376,13 +362,16 @@ export default class CompletionAdapterOpenAIResponses
       modelKwargs: normalizedModelKwargs,
     };
 
+    if (!configuredBaseUrl) {
+      chatOpenAiOptions.useResponsesApi = true;
+    } else {
+      chatOpenAiOptions.useResponsesApi = false;
+    }
+
 
     let supportsResponseContinuation = true;
     if (configuredBaseUrl) {
-      chatOpenAiOptions.supportsStrictToolCalling = false;
       supportsResponseContinuation = false;
-    } else {
-      chatOpenAiOptions.supportsStrictToolCalling = true;
     }
 
     if (clientConfiguration) {
@@ -442,7 +431,7 @@ export default class CompletionAdapterOpenAIResponses
         name: tool.name,
         description: tool.description,
         parameters: tool.input_schema,
-        strict: true,
+        strict: false,
       }));
     }
 
