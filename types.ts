@@ -7,6 +7,13 @@ export interface AdapterOptions {
   openAiApiKey: string;
 
   /**
+   * Optional OpenAI-compatible base URL.
+   *
+   * Example: `https://oai.endpoints.kepler.ai.cloud.ovh.net/v1`
+   */
+  baseUrl?: string;
+
+  /**
    * Model name. Go to https://platform.openai.com/docs/models, select model and copy name.
    * Default is `gpt-5-nano`.
    */
@@ -16,4 +23,10 @@ export interface AdapterOptions {
    * Additional request body parameters to include in the API request.
    */
   extraRequestBodyParameters?: Record<string, unknown>;
+
+  /**
+   * Logs the exact JSON body sent to the OpenAI Responses endpoint.
+   * Authorization headers are not logged.
+   */
+  dumpRawRequest?: boolean;
 }

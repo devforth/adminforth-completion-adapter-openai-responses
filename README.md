@@ -24,6 +24,19 @@ const adapter = new CompletionAdapterOpenAIResponses({
 });
 ```
 
+OpenAI-compatible providers can be used by overriding the base URL:
+
+```ts
+const adapter = new CompletionAdapterOpenAIResponses({
+	openAiApiKey: process.env.OVH_AI_ENDPOINTS_ACCESS_TOKEN as string,
+	baseUrl: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+	model: "gpt-oss-20b",
+	extraRequestBodyParameters: {
+		store: false,
+	},
+});
+```
+
 The adapter supports:
 
 - regular text completion

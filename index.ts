@@ -61,6 +61,12 @@ type OpenAiResponsesContext = {
   turnId: string;
 };
 
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const RAW_REQUEST_LOG_PREFIX = "[CompletionAdapterOpenAIResponses] Raw /responses request";
+
+type FetchInput = Parameters<typeof fetch>[0];
+type FetchInit = Parameters<typeof fetch>[1];
+
 function extractOutputText(data: OpenAIResponsesSuccess): string {
   let text = "";
 
@@ -258,6 +264,78 @@ export default class CompletionAdapterOpenAIResponses
     return this.encoding.encode(content).length;
   }
 
+  private getConfiguredBaseUrl() {
+    return this.options.baseUrl;
+  }
+
+  private shouldDumpRawRequest() {
+    return this.options.dumpRawRequest === true;
+  }
+
+  private getClientConfiguration() {
+    const configuredBaseUrl = this.getConfiguredBaseUrl();
+    const debugFetch = this.shouldDumpRawRequest()
+      ? this.createResponsesDebugFetch()
+      : undefined;
+
+    if (!configuredBaseUrl && !debugFetch) {
+      return undefined;
+    }
+
+    return {
+      ...(configuredBaseUrl ? { baseURL: configuredBaseUrl } : {}),
+      ...(debugFetch ? { fetch: debugFetch } : {}),
+    };
+  }
+
+  private createResponsesDebugFetch() {
+    return async (input: FetchInput, init?: FetchInit) => {
+      const url = this.getFetchUrl(input);
+
+      if (this.isResponsesUrl(url) && typeof init?.body === "string") {
+        this.dumpRawRequest(url, init.body);
+      }
+
+      return fetch(input, init);
+    };
+  }
+
+  private getFetchUrl(input: FetchInput) {
+    if (typeof input === "string") {
+      return input;
+    }
+
+    if (input instanceof URL) {
+      return input.toString();
+    }
+
+    return input.url;
+  }
+
+  private isResponsesUrl(url: string) {
+    try {
+      return new URL(url).pathname.endsWith("/responses");
+    } catch {
+      return url.endsWith("/responses") || url.includes("/responses?");
+    }
+  }
+
+  private dumpRawRequest(url: string, body: string) {
+    console.info(`${RAW_REQUEST_LOG_PREFIX} ${url}`);
+    try {
+      console.info(JSON.stringify(JSON.parse(body), null, 2));
+    } catch {
+      console.info(body);
+    }
+  }
+
+  private getResponsesUrl() {
+    const baseUrl = this.getConfiguredBaseUrl() || DEFAULT_OPENAI_BASE_URL;
+    const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+
+    return new URL("responses", normalizedBaseUrl).toString();
+  }
+
   getLangChainAgentSpec(params: {
     maxTokens: number;
     purpose: AgentModelPurpose;
@@ -265,23 +343,56 @@ export default class CompletionAdapterOpenAIResponses
     const extraRequestBodyParameters =
       (this.options.extraRequestBodyParameters || {}) as Record<string, unknown> & {
         reasoning?: Record<string, unknown>;
+        text?: Record<string, unknown>;
       };
     const { reasoning, ...modelKwargs } = extraRequestBodyParameters;
+    const configuredBaseUrl = this.getConfiguredBaseUrl();
+    const normalizedModelKwargs = { ...modelKwargs };
+
+    if (configuredBaseUrl) {
+      const existingText = normalizedModelKwargs.text as Record<string, unknown> | undefined;
+
+      normalizedModelKwargs.text = existingText?.format
+        ? existingText
+        : {
+            ...existingText,
+            format: {
+              type: "text",
+            },
+          };
+    }
+
+        const clientConfiguration = this.getClientConfiguration();
+
+    const chatOpenAiOptions: Record<string, unknown> = {
+      model: this.options.model || "gpt-5-nano",
+      apiKey: this.options.openAiApiKey,
+      useResponsesApi: true,
+      maxTokens: params.maxTokens,
+      reasoning: reasoning ?? {
+        effort: getAgentReasoningEffort(params.purpose),
+        summary: "auto",
+      },
+      modelKwargs: normalizedModelKwargs,
+    };
+
+
+    let supportsResponseContinuation = true;
+    if (configuredBaseUrl) {
+      chatOpenAiOptions.supportsStrictToolCalling = false;
+      supportsResponseContinuation = false;
+    } else {
+      chatOpenAiOptions.supportsStrictToolCalling = true;
+    }
+
+    if (clientConfiguration) {
+      chatOpenAiOptions.configuration = clientConfiguration;
+    }
 
     return {
-      model: new ChatOpenAI({
-        model: this.options.model || "gpt-5-nano",
-        apiKey: this.options.openAiApiKey,
-        useResponsesApi: true,
-        maxTokens: params.maxTokens,
-        reasoning: reasoning ?? {
-          effort: getAgentReasoningEffort(params.purpose),
-          summary: "auto",
-        },
-        modelKwargs,
-      } as any),
+      model: new ChatOpenAI(chatOpenAiOptions as any),
       middleware:
-        params.purpose === "primary"
+        params.purpose === "primary" && supportsResponseContinuation
           ? [createOpenAiResponsesContinuationMiddleware()]
           : [],
     };
@@ -360,13 +471,19 @@ export default class CompletionAdapterOpenAIResponses
       ...extra,
     } as ResponseCreateBody;
 
-    const resp = await fetch("https://api.openai.com/v1/responses", {
+    const serializedBody = JSON.stringify(body);
+
+    if (this.shouldDumpRawRequest()) {
+      this.dumpRawRequest(this.getResponsesUrl(), serializedBody);
+    }
+
+    const resp = await fetch(this.getResponsesUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.options.openAiApiKey}`,
       },
-      body: JSON.stringify(body),
+      body: serializedBody,
     });
 
     if (!resp.ok) {
