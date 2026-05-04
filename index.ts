@@ -34,6 +34,7 @@ type CompletionRequestInput = {
   reasoningEffort?: ReasoningEffort;
   tools?: CompletionTool[];
   onChunk?: StreamChunkCallback;
+  signal?: AbortSignal;
 };
 
 type ResponseCreateBody = OpenAI.Responses.ResponseCreateParams;
@@ -59,6 +60,7 @@ type OpenAiResponsesMetadata = {
 type OpenAiResponsesContext = {
   sessionId: string;
   turnId: string;
+  abortSignal?: AbortSignal;
 };
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -250,6 +252,7 @@ export default class CompletionAdapterOpenAIResponses
 {
   options: AdapterOptions;
   private encoding: ReturnType<typeof encoding_for_model>;
+  private activeAbortController: AbortController | null = null;
 
   constructor(options: AdapterOptions) {
     this.options = options;
@@ -273,6 +276,14 @@ export default class CompletionAdapterOpenAIResponses
 
   measureTokensCount(content: string): number {
     return this.encoding.encode(content).length;
+  }
+
+  abort() {
+    this.activeAbortController?.abort();
+  }
+
+  isGenerationInProgress() {
+    return Boolean(this.activeAbortController);
   }
 
   private getConfiguredBaseUrl() {
@@ -435,6 +446,7 @@ export default class CompletionAdapterOpenAIResponses
       reasoningEffort: requestReasoningEffort = "low",
       tools,
       onChunk: streamChunkCallback,
+      signal: requestSignal,
     } = request;
     const model = this.options.model || "gpt-5-nano";
     const isStreaming = typeof streamChunkCallback === "function";
@@ -487,69 +499,111 @@ export default class CompletionAdapterOpenAIResponses
       this.dumpRawRequest(this.getResponsesUrl(), serializedBody);
     }
 
-    const resp = await fetch(this.getResponsesUrl(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.options.openAiApiKey}`,
-      },
-      body: serializedBody,
-    });
+    const abortController = new AbortController();
+    this.activeAbortController = abortController;
+    const abortFromRequestSignal = () => abortController.abort(requestSignal?.reason);
 
-    if (!resp.ok) {
-      let errorMessage = `OpenAI request failed with status ${resp.status}`;
-      try {
-        const errorData = (await resp.json()) as OpenAIErrorResponse;
-        if (errorData.error?.message) errorMessage = errorData.error.message;
-      } catch {}
-      return { error: errorMessage };
+    if (requestSignal?.aborted) {
+      abortController.abort(requestSignal.reason);
+    } else {
+      requestSignal?.addEventListener("abort", abortFromRequestSignal, { once: true });
     }
 
-    if (!isStreaming) {
-      const json = await resp.json();
-      const data = json as OpenAIResponsesSuccess & OpenAIErrorResponse;
-      if (data.error) {
-        return { error: data.error.message };
+    let resp: Response | null = null;
+    try {
+      resp = await fetch(this.getResponsesUrl(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.options.openAiApiKey}`,
+        },
+        body: serializedBody,
+        signal: abortController.signal,
+      });
+    } catch (error: any) {
+      if (this.activeAbortController === abortController) {
+        this.activeAbortController = null;
       }
 
-      const toolCall = extractFunctionCall(data);
-      if (toolCall) {
-        try {
-          const toolResult = await executeToolCall(toolCall, tools);
-          return {
-            content: toolResult,
-            finishReason: "tool_call",
-          };
-        } catch (error: any) {
-          return {
-            error: error?.message || "Tool execution failed",
-            finishReason: "tool_call",
-          };
-        }
+      if (abortController.signal.aborted) {
+        return {
+          error: error?.message || "Generation aborted",
+          finishReason: "aborted",
+        };
       }
-
-      const parsedContent = extractOutputText(data);
 
       return {
-        content: parsedContent,
-        finishReason: data.incomplete_details?.reason
-          ? data.incomplete_details.reason
-          : undefined,
+        error: error?.message || "OpenAI request failed",
+      };
+    } finally {
+      requestSignal?.removeEventListener("abort", abortFromRequestSignal);
+    }
+
+    if (!resp) {
+      if (this.activeAbortController === abortController) {
+        this.activeAbortController = null;
+      }
+
+      return {
+        error: "OpenAI request failed",
       };
     }
 
-    if (!resp.body) {
-      return { error: "Response body is empty" };
-    }
+    try {
+      if (!resp.ok) {
+        let errorMessage = `OpenAI request failed with status ${resp.status}`;
+        try {
+          const errorData = (await resp.json()) as OpenAIErrorResponse;
+          if (errorData.error?.message) errorMessage = errorData.error.message;
+        } catch {}
+        return { error: errorMessage };
+      }
 
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder("utf-8");
+      if (!isStreaming) {
+        const json = await resp.json();
+        const data = json as OpenAIResponsesSuccess & OpenAIErrorResponse;
+        if (data.error) {
+          return { error: data.error.message };
+        }
 
-    let buffer = "";
-    let fullContent = "";
-    let fullReasoning = "";
-    let finishReason: string | undefined;
-    let completedResponse: OpenAIResponsesSuccess | undefined;
+        const toolCall = extractFunctionCall(data);
+        if (toolCall) {
+          try {
+            const toolResult = await executeToolCall(toolCall, tools);
+            return {
+              content: toolResult,
+              finishReason: "tool_call",
+            };
+          } catch (error: any) {
+            return {
+              error: error?.message || "Tool execution failed",
+              finishReason: "tool_call",
+            };
+          }
+        }
+
+        const parsedContent = extractOutputText(data);
+
+        return {
+          content: parsedContent,
+          finishReason: data.incomplete_details?.reason
+            ? data.incomplete_details.reason
+            : undefined,
+        };
+      }
+
+      if (!resp.body) {
+        return { error: "Response body is empty" };
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+
+      let buffer = "";
+      let fullContent = "";
+      let fullReasoning = "";
+      let finishReason: string | undefined;
+      let completedResponse: OpenAIResponsesSuccess | undefined;
 
     const handleEvent = async (event: any, eventType?: string) => {
       const type = event?.type || eventType;
@@ -703,6 +757,14 @@ export default class CompletionAdapterOpenAIResponses
         finishReason,
       };
     } catch (error: any) {
+      if (abortController.signal.aborted) {
+        return {
+          error: error?.message || "Generation aborted",
+          content: fullContent || undefined,
+          finishReason: "aborted",
+        };
+      }
+
       return {
         error: error?.message || "Streaming failed",
         content: fullContent || undefined,
@@ -710,6 +772,11 @@ export default class CompletionAdapterOpenAIResponses
       };
     } finally {
       reader.releaseLock();
+    }
+    } finally {
+      if (this.activeAbortController === abortController) {
+        this.activeAbortController = null;
+      }
     }
   };
 }
