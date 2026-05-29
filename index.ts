@@ -160,7 +160,7 @@ function buildReasoningConfig(params: {
   effort: Exclude<ReasoningEffort, "none"> | ReasoningEffort;
 }) {
   return {
-    summary: "detailed",
+    summary: "auto",
     effort: params.effort,
     ...(params.reasoning ?? {}),
   };
