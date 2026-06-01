@@ -63,6 +63,19 @@ type OpenAiResponsesContext = {
   abortSignal?: AbortSignal;
 };
 
+type UsedTokens = {
+  input_uncached: number;
+  input_cached: number;
+  output: number;
+};
+
+type CompletionResult = {
+  content?: string;
+  finishReason?: string;
+  error?: string;
+  used_tokens?: UsedTokens;
+};
+
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const RAW_REQUEST_LOG_PREFIX = "[CompletionAdapterOpenAIResponses] Raw /responses request";
 
@@ -118,6 +131,21 @@ function extractFunctionCall(
   }
 
   return undefined;
+}
+
+function extractUsedTokens(data: OpenAIResponsesSuccess): UsedTokens | undefined {
+  const usage = data.usage;
+  if (!usage) {
+    return undefined;
+  }
+
+  const inputCached = usage.input_tokens_details?.cached_tokens ?? 0;
+
+  return {
+    input_uncached: Math.max(usage.input_tokens - inputCached, 0),
+    input_cached: inputCached,
+    output: usage.output_tokens,
+  };
 }
 
 async function executeToolCall(
@@ -420,11 +448,7 @@ export default class CompletionAdapterOpenAIResponses
     reasoningEffort: ReasoningEffort = "low",
     toolsOrOnChunk?: CompletionTool[] | StreamChunkCallback,
     onChunk?: StreamChunkCallback,
-  ): Promise<{
-    content?: string;
-    finishReason?: string;
-    error?: string;
-  }> => {
+  ): Promise<CompletionResult> => {
     const request =
       typeof requestOrContent === "string"
         ? {
@@ -566,6 +590,8 @@ export default class CompletionAdapterOpenAIResponses
           return { error: data.error.message };
         }
 
+        const usedTokens = extractUsedTokens(data);
+
         const toolCall = extractFunctionCall(data);
         if (toolCall) {
           try {
@@ -573,11 +599,13 @@ export default class CompletionAdapterOpenAIResponses
             return {
               content: toolResult,
               finishReason: "tool_call",
+              used_tokens: usedTokens,
             };
           } catch (error: any) {
             return {
               error: error?.message || "Tool execution failed",
               finishReason: "tool_call",
+              used_tokens: usedTokens,
             };
           }
         }
@@ -589,6 +617,7 @@ export default class CompletionAdapterOpenAIResponses
           finishReason: data.incomplete_details?.reason
             ? data.incomplete_details.reason
             : undefined,
+          used_tokens: usedTokens,
         };
       }
 
@@ -604,6 +633,7 @@ export default class CompletionAdapterOpenAIResponses
       let fullReasoning = "";
       let finishReason: string | undefined;
       let completedResponse: OpenAIResponsesSuccess | undefined;
+      let usedTokens: UsedTokens | undefined;
 
     const handleEvent = async (event: any, eventType?: string) => {
       const type = event?.type || eventType;
@@ -664,6 +694,7 @@ export default class CompletionAdapterOpenAIResponses
         finishReason =
           response.incomplete_details?.reason || response.status || finishReason;
         completedResponse = response;
+        usedTokens = extractUsedTokens(response);
         return;
       }
 
@@ -741,12 +772,14 @@ export default class CompletionAdapterOpenAIResponses
             return {
               content: toolResult,
               finishReason: "tool_call",
+              used_tokens: usedTokens,
             };
           } catch (error: any) {
             return {
               error: error?.message || "Tool execution failed",
               content: fullContent || undefined,
               finishReason: "tool_call",
+              used_tokens: usedTokens,
             };
           }
         }
@@ -755,6 +788,7 @@ export default class CompletionAdapterOpenAIResponses
       return {
         content: fullContent || undefined,
         finishReason,
+        used_tokens: usedTokens,
       };
     } catch (error: any) {
       if (abortController.signal.aborted) {
@@ -762,6 +796,7 @@ export default class CompletionAdapterOpenAIResponses
           error: error?.message || "Generation aborted",
           content: fullContent || undefined,
           finishReason: "aborted",
+          used_tokens: usedTokens,
         };
       }
 
@@ -769,6 +804,7 @@ export default class CompletionAdapterOpenAIResponses
         error: error?.message || "Streaming failed",
         content: fullContent || undefined,
         finishReason,
+        used_tokens: usedTokens,
       };
     } finally {
       reader.releaseLock();
