@@ -93,9 +93,9 @@ function extractUsedTokens(data: OpenAIResponsesSuccess): UsedTokens | undefined
   const inputCached = usage.input_tokens_details?.cached_tokens ?? 0;
 
   return {
-    input_uncached: Math.max(usage.input_tokens - inputCached, 0),
+    input_uncached: Math.max((usage.input_tokens ?? 0) - inputCached, 0),
     input_cached: inputCached,
-    output: usage.output_tokens,
+    output: usage.output_tokens ?? 0,
   };
 }
 
