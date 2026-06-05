@@ -45,3 +45,23 @@ The adapter supports:
 - tool calls
 - streaming output chunks
 - streaming reasoning chunks
+- Responses API continuation with `previousResponseId`
+
+## Responses continuation
+
+For regular completion flows you can pass the previous Responses API id to reuse
+server-side context. The adapter returns the current `responseId`, which can be
+used as `previousResponseId` on the next call:
+
+```ts
+const first = await adapter.complete({
+	content: "Summarize the project requirements",
+	maxTokens: 300,
+});
+
+const second = await adapter.complete({
+	content: "Now turn that into three implementation milestones",
+	maxTokens: 300,
+	previousResponseId: first.responseId,
+});
+```

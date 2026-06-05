@@ -1,289 +1,35 @@
 import type { AdapterOptions } from "./types.js";
 import type {
   CompletionAdapter,
-  CompletionStreamEvent,
   CompletionTool,
 } from "adminforth";
-import { AIMessage } from "@langchain/core/messages";
-import { ChatOpenAI } from "@langchain/openai";
-import { createMiddleware } from "langchain";
 import { encoding_for_model, type TiktokenModel } from "tiktoken";
-import type OpenAI from "openai";
+import {
+  OpenAIResponsesService,
+  type CompletionRequestInput,
+  type CompletionResult,
+  type ReasoningEffort,
+  type StreamChunkCallback,
+} from "./openai.js";
+import {
+  createLangChainAgentSpec,
+  type AgentModelPurpose,
+} from "./langchain.js";
 
 export type { AdapterOptions } from "./types.js";
 
-type StreamChunkCallback = (
-  chunk: string,
-  event?: CompletionStreamEvent,
-) => void | Promise<void>;
-
-type ReasoningEffort =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
-
-type AgentModelPurpose = "primary" | "summary";
-
-type CompletionRequestInput = {
-  content: string;
-  maxTokens?: number;
-  outputSchema?: any;
-  reasoningEffort?: ReasoningEffort;
-  tools?: CompletionTool[];
-  onChunk?: StreamChunkCallback;
-  signal?: AbortSignal;
-};
-
-type ResponseCreateBody = OpenAI.Responses.ResponseCreateParams;
-type OpenAIResponsesSuccess = OpenAI.Responses.Response;
-type OpenAIErrorResponse = {
-  error?: {
-    message?: string;
-    type?: string;
-    param?: string | null;
-    code?: string | null;
-  };
-};
-type OpenAITool = OpenAI.Responses.Tool;
-type OpenAIFunctionCall = Extract<
-  OpenAI.Responses.ResponseOutputItem,
-  { type: "function_call" }
->;
-
-type OpenAiResponsesMetadata = {
-  id?: string;
-};
-
-type OpenAiResponsesContext = {
-  sessionId: string;
-  turnId: string;
-  abortSignal?: AbortSignal;
-};
-
-type UsedTokens = {
-  input_uncached: number;
-  input_cached: number;
-  output: number;
-};
-
-type CompletionResult = {
-  content?: string;
-  finishReason?: string;
-  error?: string;
-  used_tokens?: UsedTokens;
-};
-
-const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
-const RAW_REQUEST_LOG_PREFIX = "[CompletionAdapterOpenAIResponses] Raw /responses request";
-
-type FetchInput = Parameters<typeof fetch>[0];
-type FetchInit = Parameters<typeof fetch>[1];
-
-function extractOutputText(data: OpenAIResponsesSuccess): string {
-  let text = "";
-
-  for (const item of data.output ?? []) {
-    if (item.type !== "message" || !Array.isArray(item.content)) continue;
-    for (const part of item.content) {
-      if (part.type === "output_text" && typeof part.text === "string") {
-        text += part.text;
-      }
-    }
-  }
-
-  return text;
-}
-
-function extractReasoning(data: OpenAIResponsesSuccess): string | undefined {
-  let reasoning = "";
-
-  for (const item of data.output ?? []) {
-    if (item.type !== "reasoning") continue;
-
-    for (const part of item.summary ?? []) {
-      if (part?.type === "summary_text" && typeof part.text === "string") {
-        reasoning += part.text;
-      }
-    }
-
-    if (!reasoning) {
-      for (const part of item.content ?? []) {
-        if (part?.type === "reasoning_text" && typeof part.text === "string") {
-          reasoning += part.text;
-        }
-      }
-    }
-  }
-
-  return reasoning || undefined;
-}
-
-function extractFunctionCall(
-  data: OpenAIResponsesSuccess,
-): OpenAIFunctionCall | undefined {
-  for (const item of data.output ?? []) {
-    if (item.type === "function_call") {
-      return item;
-    }
-  }
-
-  return undefined;
-}
-
-function extractUsedTokens(data: OpenAIResponsesSuccess): UsedTokens | undefined {
-  const usage = data.usage;
-  if (!usage) {
-    return undefined;
-  }
-
-  const inputCached = usage.input_tokens_details?.cached_tokens ?? 0;
-
-  return {
-    input_uncached: Math.max(usage.input_tokens - inputCached, 0),
-    input_cached: inputCached,
-    output: usage.output_tokens,
-  };
-}
-
-async function executeToolCall(
-  toolCall: OpenAIFunctionCall,
-  tools?: CompletionTool[],
-): Promise<string> {
-  const tool = tools?.find((candidate) => candidate.name === toolCall.name);
-  if (!tool) {
-    throw new Error(`Tool "${toolCall.name}" not found`);
-  }
-
-  const toolResult = await tool.handler(JSON.parse(toolCall.arguments));
-  if (typeof toolResult === "string") return toolResult;
-  if (typeof toolResult === "undefined") return "";
-  return JSON.stringify(toolResult);
-}
-
-function parseSseBlock(block: string) {
-  let event: string | undefined;
-  let data = "";
-
-  for (const rawLine of block.split("\n")) {
-    const line = rawLine.trimEnd();
-    if (!line) continue;
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-    if (line.startsWith("data:")) data += line.slice(5).trim();
-  }
-
-  return data ? { event, data } : null;
-}
-
-function getAgentReasoningEffort(
-  purpose: AgentModelPurpose,
-): Exclude<ReasoningEffort, "none"> {
-  return purpose === "summary" ? "minimal" : "low";
-}
-
-function buildReasoningConfig(params: {
-  reasoning?: Record<string, unknown>;
-  effort: Exclude<ReasoningEffort, "none"> | ReasoningEffort;
-}) {
-  return {
-    summary: "auto",
-    effort: params.effort,
-    ...(params.reasoning ?? {}),
-  };
-}
-
-function getTurnKey(context: OpenAiResponsesContext) {
-  return `${context.sessionId}:${context.turnId}`;
-}
-
-function getResponseId(message: AIMessage) {
-  const metadata = message.response_metadata as OpenAiResponsesMetadata | undefined;
-  return metadata?.id ?? null;
-}
-
-function getPreviousResponseId(modelSettings?: Record<string, unknown>) {
-  return (modelSettings as { previous_response_id?: string } | undefined)
-    ?.previous_response_id;
-}
-
-function getContinuationMessages<T extends { response_metadata?: unknown }>(
-  messages: T[],
-  previousResponseId: string,
-) {
-  let continuationStartIndex: number | null = null;
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-
-    if (
-      AIMessage.isInstance(message) &&
-      (message.response_metadata as OpenAiResponsesMetadata | undefined)?.id ===
-        previousResponseId
-    ) {
-      continuationStartIndex = index + 1;
-      break;
-    }
-  }
-
-  if (continuationStartIndex === null) {
-    return null;
-  }
-
-  return messages.slice(continuationStartIndex);
-}
-
-function createOpenAiResponsesContinuationMiddleware() {
-  const responseIdsByTurn = new Map<string, string>();
-
-  return createMiddleware({
-    name: "OpenAiResponsesContinuationMiddleware",
-    async wrapModelCall(request, handler) {
-      const context = request.runtime.context as OpenAiResponsesContext;
-      const turnKey = getTurnKey(context);
-      const previousResponseId =
-        getPreviousResponseId(request.modelSettings) ??
-        responseIdsByTurn.get(turnKey);
-      const continuationMessages = previousResponseId
-        ? getContinuationMessages(request.messages, previousResponseId)
-        : null;
-
-      const response = (await handler(
-        previousResponseId && continuationMessages
-          ? {
-              ...request,
-              messages: continuationMessages,
-              modelSettings: {
-                ...request.modelSettings,
-                previous_response_id: previousResponseId,
-              },
-            }
-          : request,
-      )) as AIMessage;
-
-      const responseId = getResponseId(response);
-
-      if (responseId) {
-        responseIdsByTurn.set(turnKey, responseId);
-      } else {
-        responseIdsByTurn.delete(turnKey);
-      }
-
-      return response;
-    },
-  });
-}
-
-export default class CompletionAdapterOpenAIResponses
+class CompletionAdapterOpenAIResponses
   implements CompletionAdapter
 {
   options: AdapterOptions;
   private encoding: ReturnType<typeof encoding_for_model>;
   private activeAbortController: AbortController | null = null;
+  private openAi: OpenAIResponsesService;
 
   constructor(options: AdapterOptions) {
     this.options = options;
+    this.openAi = new OpenAIResponsesService(options);
+
     try {
       this.encoding = encoding_for_model(
         (this.options.model || "gpt-5-nano") as TiktokenModel,
@@ -326,119 +72,18 @@ export default class CompletionAdapterOpenAIResponses
     return Boolean(this.getConfiguredBaseUrl());
   }
 
-  private shouldDumpRawRequest() {
-    return this.options.dumpRawRequest === true;
-  }
-
-  private getClientConfiguration() {
-    const configuredBaseUrl = this.getConfiguredBaseUrl();
-    const debugFetch = this.shouldDumpRawRequest()
-      ? this.createResponsesDebugFetch()
-      : undefined;
-
-    if (!configuredBaseUrl && !debugFetch) {
-      return undefined;
-    }
-
-    return {
-      ...(configuredBaseUrl ? { baseURL: configuredBaseUrl } : {}),
-      ...(debugFetch ? { fetch: debugFetch } : {}),
-    };
-  }
-
-  private createResponsesDebugFetch() {
-    return async (input: FetchInput, init?: FetchInit) => {
-      const url = this.getFetchUrl(input);
-
-      if (this.isResponsesUrl(url) && typeof init?.body === "string") {
-        this.dumpRawRequest(url, init.body);
-      }
-
-      return fetch(input, init);
-    };
-  }
-
-  private getFetchUrl(input: FetchInput) {
-    if (typeof input === "string") {
-      return input;
-    }
-
-    if (input instanceof URL) {
-      return input.toString();
-    }
-
-    return input.url;
-  }
-
-  private isResponsesUrl(url: string) {
-    try {
-      return new URL(url).pathname.endsWith("/responses");
-    } catch {
-      return url.endsWith("/responses") || url.includes("/responses?");
-    }
-  }
-
-  private dumpRawRequest(url: string, body: string) {
-    console.info(`${RAW_REQUEST_LOG_PREFIX} ${url}`);
-    try {
-      console.info(JSON.stringify(JSON.parse(body), null, 2));
-    } catch {
-      console.info(body);
-    }
-  }
-
-  private getResponsesUrl() {
-    const baseUrl = this.getConfiguredBaseUrl() || DEFAULT_OPENAI_BASE_URL;
-    const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-
-    return new URL("responses", normalizedBaseUrl).toString();
-  }
-
   getLangChainAgentSpec(params: {
     maxTokens: number;
     purpose: AgentModelPurpose;
   }) {
-    const extraRequestBodyParameters =
-      (this.options.extraRequestBodyParameters || {}) as Record<string, unknown> & {
-        reasoning?: Record<string, unknown>;
-        text?: Record<string, unknown>;
-      };
-    const { reasoning, ...modelKwargs } = extraRequestBodyParameters;
-    const configuredBaseUrl = this.getConfiguredBaseUrl();
-    const normalizedModelKwargs = { ...modelKwargs };
-
-
-    const clientConfiguration = this.getClientConfiguration();
-    const useComplitionApi = this.shouldUseComplitionApi();
-    const chatOpenAiOptions: Record<string, unknown> = {
-      model: this.options.model || "gpt-5-nano",
-      apiKey: this.options.openAiApiKey,
+    return createLangChainAgentSpec({
+      options: this.options,
       maxTokens: params.maxTokens,
-      reasoning: buildReasoningConfig({
-        reasoning,
-        effort: getAgentReasoningEffort(params.purpose),
-      }),
-      modelKwargs: normalizedModelKwargs,
-    };
-
-    chatOpenAiOptions.useResponsesApi = !useComplitionApi;
-
-    let supportsResponseContinuation = true;
-    if (configuredBaseUrl || useComplitionApi) {
-      supportsResponseContinuation = false;
-    }
-
-    if (clientConfiguration) {
-      chatOpenAiOptions.configuration = clientConfiguration;
-    }
-
-    return {
-      model: new ChatOpenAI(chatOpenAiOptions as any),
-      middleware:
-        params.purpose === "primary" && supportsResponseContinuation
-          ? [createOpenAiResponsesContinuationMiddleware()]
-          : [],
-    };
+      purpose: params.purpose,
+      configuredBaseUrl: this.getConfiguredBaseUrl(),
+      clientConfiguration: this.openAi.getClientConfiguration(),
+      useComplitionApi: this.shouldUseComplitionApi(),
+    });
   }
 
   complete = async (
@@ -463,66 +108,7 @@ export default class CompletionAdapterOpenAIResponses
                 : onChunk,
           }
         : requestOrContent;
-    const {
-      content,
-      maxTokens: requestMaxTokens = 50,
-      outputSchema: requestOutputSchema,
-      reasoningEffort: requestReasoningEffort = "low",
-      tools,
-      onChunk: streamChunkCallback,
-      signal: requestSignal,
-    } = request;
-    const model = this.options.model || "gpt-5-nano";
-    const isStreaming = typeof streamChunkCallback === "function";
-    const extra =
-      this.options.extraRequestBodyParameters as
-        | (Record<string, unknown> & { reasoning?: Record<string, unknown> })
-        | undefined;
-    const { reasoning: extraReasoning, ...extraWithoutReasoning } = extra ?? {};
-    let openAiTools: OpenAITool[] | undefined = undefined;
-    if (tools && tools.length > 0) {
-      openAiTools = tools.map((tool) => ({
-        type: "function",
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.input_schema,
-        strict: false,
-      }));
-    }
-
-    const body = {
-      model,
-      input: content,
-      max_output_tokens: requestMaxTokens,
-      stream: isStreaming,
-      text: requestOutputSchema
-        ? {
-            format: {
-              type: "json_schema",
-              ...requestOutputSchema,
-            },
-          }
-        : {
-            format: {
-              type: "text",
-            },
-          },
-      reasoning: {
-        ...buildReasoningConfig({
-          reasoning: extraReasoning,
-          effort: requestReasoningEffort,
-        }),
-      },
-      tools: openAiTools,
-      ...extraWithoutReasoning,
-    } as ResponseCreateBody;
-
-    const serializedBody = JSON.stringify(body);
-
-    if (this.shouldDumpRawRequest()) {
-      this.dumpRawRequest(this.getResponsesUrl(), serializedBody);
-    }
-
+    const { signal: requestSignal } = request;
     const abortController = new AbortController();
     this.activeAbortController = abortController;
     const abortFromRequestSignal = () => abortController.abort(requestSignal?.reason);
@@ -533,286 +119,16 @@ export default class CompletionAdapterOpenAIResponses
       requestSignal?.addEventListener("abort", abortFromRequestSignal, { once: true });
     }
 
-    let resp: Response | null = null;
     try {
-      resp = await fetch(this.getResponsesUrl(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.options.openAiApiKey}`,
-        },
-        body: serializedBody,
-        signal: abortController.signal,
-      });
-    } catch (error: any) {
-      if (this.activeAbortController === abortController) {
-        this.activeAbortController = null;
-      }
-
-      if (abortController.signal.aborted) {
-        return {
-          error: error?.message || "Generation aborted",
-          finishReason: "aborted",
-        };
-      }
-
-      return {
-        error: error?.message || "OpenAI request failed",
-      };
+      return await this.openAi.complete(request, abortController.signal);
     } finally {
       requestSignal?.removeEventListener("abort", abortFromRequestSignal);
-    }
-
-    if (!resp) {
-      if (this.activeAbortController === abortController) {
-        this.activeAbortController = null;
-      }
-
-      return {
-        error: "OpenAI request failed",
-      };
-    }
-
-    try {
-      if (!resp.ok) {
-        let errorMessage = `OpenAI request failed with status ${resp.status}`;
-        try {
-          const errorData = (await resp.json()) as OpenAIErrorResponse;
-          if (errorData.error?.message) errorMessage = errorData.error.message;
-        } catch {}
-        return { error: errorMessage };
-      }
-
-      if (!isStreaming) {
-        const json = await resp.json();
-        const data = json as OpenAIResponsesSuccess & OpenAIErrorResponse;
-        if (data.error) {
-          return { error: data.error.message };
-        }
-
-        const usedTokens = extractUsedTokens(data);
-
-        const toolCall = extractFunctionCall(data);
-        if (toolCall) {
-          try {
-            const toolResult = await executeToolCall(toolCall, tools);
-            return {
-              content: toolResult,
-              finishReason: "tool_call",
-              used_tokens: usedTokens,
-            };
-          } catch (error: any) {
-            return {
-              error: error?.message || "Tool execution failed",
-              finishReason: "tool_call",
-              used_tokens: usedTokens,
-            };
-          }
-        }
-
-        const parsedContent = extractOutputText(data);
-
-        return {
-          content: parsedContent,
-          finishReason: data.incomplete_details?.reason
-            ? data.incomplete_details.reason
-            : undefined,
-          used_tokens: usedTokens,
-        };
-      }
-
-      if (!resp.body) {
-        return { error: "Response body is empty" };
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-
-      let buffer = "";
-      let fullContent = "";
-      let fullReasoning = "";
-      let finishReason: string | undefined;
-      let completedResponse: OpenAIResponsesSuccess | undefined;
-      let usedTokens: UsedTokens | undefined;
-
-    const handleEvent = async (event: any, eventType?: string) => {
-      const type = event?.type || eventType;
-
-      if (type === "response.output_text.delta") {
-        const delta = event?.delta || "";
-        if (!delta) return;
-        fullContent += delta;
-        await streamChunkCallback?.(delta, { type: "output", delta, text: fullContent });
-        return;
-      }
-
-      if (
-        type === "response.reasoning_summary_text.delta" ||
-        type === "response.reasoning_text.delta"
-      ) {
-        const delta = event?.delta || "";
-        if (!delta) return;
-        fullReasoning += delta;
-        await streamChunkCallback?.(delta, {
-          type: "reasoning",
-          delta,
-          text: fullReasoning,
-        });
-        return;
-      }
-
-      if (type === "response.completed" || type === "response.incomplete") {
-        const response = event?.response as OpenAIResponsesSuccess | undefined;
-        if (!response) return;
-
-        const finalContent = extractOutputText(response);
-        if (finalContent.startsWith(fullContent)) {
-          const delta = finalContent.slice(fullContent.length);
-          if (delta) {
-            fullContent = finalContent;
-            await streamChunkCallback?.(delta, {
-              type: "output",
-              delta,
-              text: fullContent,
-            });
-          }
-        }
-
-        const finalReasoning = extractReasoning(response) || "";
-        if (finalReasoning.startsWith(fullReasoning)) {
-          const delta = finalReasoning.slice(fullReasoning.length);
-          if (delta) {
-            fullReasoning = finalReasoning;
-            await streamChunkCallback?.(delta, {
-              type: "reasoning",
-              delta,
-              text: fullReasoning,
-            });
-          }
-        }
-
-        finishReason =
-          response.incomplete_details?.reason || response.status || finishReason;
-        completedResponse = response;
-        usedTokens = extractUsedTokens(response);
-        return;
-      }
-
-      if (type === "response.failed") {
-        throw new Error(
-          event?.response?.error?.message ||
-            event?.error?.message ||
-            "Response failed",
-        );
-      }
-    };
-
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        const blocks = buffer.split("\n\n");
-        buffer = blocks.pop() || "";
-
-        for (const block of blocks) {
-          const parsedBlock = parseSseBlock(block);
-          if (!parsedBlock?.data || parsedBlock.data === "[DONE]") continue;
-
-          let event: any;
-          try {
-            event = JSON.parse(parsedBlock.data);
-          } catch {
-            continue;
-          }
-
-          if (event?.error?.message) {
-            return { error: event.error.message };
-          }
-
-          await handleEvent(event, parsedBlock.event);
-        }
-      }
-
-      if (buffer.trim()) {
-        const parsedBlock = parseSseBlock(buffer.trim());
-        if (parsedBlock?.data && parsedBlock.data !== "[DONE]") {
-          try {
-            await handleEvent(JSON.parse(parsedBlock.data), parsedBlock.event);
-          } catch (error: any) {
-            return {
-              error: error?.message || "Streaming failed",
-              content: fullContent || undefined,
-              finishReason,
-            };
-          }
-        }
-      }
-
-      if (completedResponse) {
-        const toolCall = extractFunctionCall(completedResponse);
-        if (toolCall) {
-          try {
-            const toolResult = await executeToolCall(toolCall, tools);
-            if (toolResult) {
-              const delta = toolResult.startsWith(fullContent)
-                ? toolResult.slice(fullContent.length)
-                : toolResult;
-              if (delta) {
-                await streamChunkCallback?.(delta, {
-                  type: "output",
-                  delta,
-                  text: toolResult,
-                });
-              }
-            }
-
-            return {
-              content: toolResult,
-              finishReason: "tool_call",
-              used_tokens: usedTokens,
-            };
-          } catch (error: any) {
-            return {
-              error: error?.message || "Tool execution failed",
-              content: fullContent || undefined,
-              finishReason: "tool_call",
-              used_tokens: usedTokens,
-            };
-          }
-        }
-      }
-
-      return {
-        content: fullContent || undefined,
-        finishReason,
-        used_tokens: usedTokens,
-      };
-    } catch (error: any) {
-      if (abortController.signal.aborted) {
-        return {
-          error: error?.message || "Generation aborted",
-          content: fullContent || undefined,
-          finishReason: "aborted",
-          used_tokens: usedTokens,
-        };
-      }
-
-      return {
-        error: error?.message || "Streaming failed",
-        content: fullContent || undefined,
-        finishReason,
-        used_tokens: usedTokens,
-      };
-    } finally {
-      reader.releaseLock();
-    }
-    } finally {
       if (this.activeAbortController === abortController) {
         this.activeAbortController = null;
       }
     }
   };
 }
+
+export { CompletionAdapterOpenAIResponses };
+export default CompletionAdapterOpenAIResponses;

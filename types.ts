@@ -1,3 +1,9 @@
+import type OpenAI from "openai";
+
+export type AdapterExtraRequestBodyParameters = Partial<
+  Omit<OpenAI.Responses.ResponseCreateParamsNonStreaming, "stream">
+>;
+
 export interface AdapterOptions {
   /**
    * OpenAI API key. Go to https://platform.openai.com/, go to Dashboard -> API keys -> Create new secret key
@@ -32,7 +38,7 @@ export interface AdapterOptions {
   /**
    * Additional request body parameters to include in the API request.
    */
-  extraRequestBodyParameters?: Record<string, unknown>;
+  extraRequestBodyParameters?: AdapterExtraRequestBodyParameters;
 
   /**
    * Logs the exact JSON body sent to the OpenAI Responses endpoint.
