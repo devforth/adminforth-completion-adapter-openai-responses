@@ -69,7 +69,7 @@ class CompletionAdapterOpenAIResponses
       return this.options.useComplitionApi;
     }
 
-    return Boolean(this.getConfiguredBaseUrl());
+    return false;
   }
 
   getLangChainAgentSpec(params: {

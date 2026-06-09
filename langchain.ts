@@ -151,7 +151,7 @@ export function createLangChainAgentSpec(params: {
   chatOpenAiOptions.useResponsesApi = !params.useComplitionApi;
 
   let supportsResponseContinuation = true;
-  if (params.configuredBaseUrl || params.useComplitionApi) {
+  if (params.useComplitionApi) {
     supportsResponseContinuation = false;
   }
 

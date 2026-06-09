@@ -2,7 +2,10 @@ import type OpenAI from "openai";
 
 export type AdapterExtraRequestBodyParameters = Partial<
   Omit<OpenAI.Responses.ResponseCreateParamsNonStreaming, "stream">
->;
+> &
+  Partial<
+    Omit<OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming, "stream">
+  >;
 
 export interface AdapterOptions {
   /**
@@ -20,12 +23,11 @@ export interface AdapterOptions {
   baseUrl?: string;
 
   /**
-   * Forces LangChain agent mode to use the Chat Completions API instead of the
-   * Responses API.
+   * Forces the adapter to use the Chat Completions API instead of the Responses
+   * API.
    *
-   * When omitted, the adapter keeps the current default behavior:
-   * - official OpenAI uses the Responses API
-   * - custom `baseUrl` providers use the Chat Completions API
+   * When omitted, the adapter uses the Responses API, including for custom
+   * `baseUrl` providers.
    */
   useComplitionApi?: boolean;
 

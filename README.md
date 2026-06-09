@@ -24,7 +24,19 @@ const adapter = new CompletionAdapterOpenAIResponses({
 });
 ```
 
-OpenAI-compatible providers can be used by overriding the base URL:
+To use the Chat Completions API instead of the Responses API, set
+`useComplitionApi: true`:
+
+```ts
+const adapter = new CompletionAdapterOpenAIResponses({
+	openAiApiKey: process.env.OPENAI_API_KEY as string,
+	model: "gpt-5-nano",
+	useComplitionApi: true,
+});
+```
+
+OpenAI-compatible providers can be used by overriding the base URL. The adapter
+still uses the Responses API by default:
 
 ```ts
 const adapter = new CompletionAdapterOpenAIResponses({
@@ -36,6 +48,9 @@ const adapter = new CompletionAdapterOpenAIResponses({
 	},
 });
 ```
+
+If the provider only supports Chat Completions, also set
+`useComplitionApi: true`.
 
 The adapter supports:
 

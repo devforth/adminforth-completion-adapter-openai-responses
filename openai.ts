@@ -33,11 +33,21 @@ type ResponseCreateBody = Omit<
   OpenAI.Responses.ResponseCreateParamsNonStreaming,
   "stream"
 >;
+type ChatCompletionCreateBody = Omit<
+  OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+  "stream"
+>;
 type OpenAIResponsesSuccess = OpenAI.Responses.Response;
+type OpenAIChatSuccess = OpenAI.Chat.Completions.ChatCompletion;
 type OpenAITool = NonNullable<ResponseCreateBody["tools"]>[number];
+type OpenAIChatTool = NonNullable<ChatCompletionCreateBody["tools"]>[number];
 type OpenAIFunctionCall = Extract<
   OpenAI.Responses.ResponseOutputItem,
   { type: "function_call" }
+>;
+type OpenAIChatToolCall = Extract<
+  NonNullable<OpenAI.Chat.Completions.ChatCompletionMessage["tool_calls"]>[number],
+  { type: "function" }
 >;
 type ReasoningConfig = ResponseCreateBody["reasoning"];
 
@@ -99,6 +109,21 @@ function extractUsedTokens(data: OpenAIResponsesSuccess): UsedTokens | undefined
   };
 }
 
+function extractChatUsedTokens(data: OpenAIChatSuccess): UsedTokens | undefined {
+  const usage = data.usage;
+  if (!usage) {
+    return undefined;
+  }
+
+  const inputCached = usage.prompt_tokens_details?.cached_tokens ?? 0;
+
+  return {
+    input_uncached: Math.max((usage.prompt_tokens ?? 0) - inputCached, 0),
+    input_cached: inputCached,
+    output: usage.completion_tokens ?? 0,
+  };
+}
+
 async function executeToolCall(
   toolCall: OpenAIFunctionCall,
   tools?: CompletionTool[],
@@ -109,6 +134,21 @@ async function executeToolCall(
   }
 
   const toolResult = await tool.handler(JSON.parse(toolCall.arguments));
+  if (typeof toolResult === "string") return toolResult;
+  if (typeof toolResult === "undefined") return "";
+  return JSON.stringify(toolResult);
+}
+
+async function executeChatToolCall(
+  toolCall: OpenAIChatToolCall,
+  tools?: CompletionTool[],
+): Promise<string> {
+  const tool = tools?.find((candidate) => candidate.name === toolCall.function.name);
+  if (!tool) {
+    throw new Error(`Tool "${toolCall.function.name}" not found`);
+  }
+
+  const toolResult = await tool.handler(JSON.parse(toolCall.function.arguments));
   if (typeof toolResult === "string") return toolResult;
   if (typeof toolResult === "undefined") return "";
   return JSON.stringify(toolResult);
@@ -217,6 +257,22 @@ function mapTools(tools?: CompletionTool[]): ResponseCreateBody["tools"] {
   }));
 }
 
+function mapChatTools(tools?: CompletionTool[]): ChatCompletionCreateBody["tools"] {
+  if (!tools?.length) {
+    return undefined;
+  }
+
+  return tools.map((tool): OpenAIChatTool => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.input_schema,
+      strict: false,
+    },
+  }));
+}
+
 function buildResponseBody(params: {
   options: AdapterOptions;
   request: CompletionRequestInput;
@@ -263,6 +319,93 @@ function buildResponseBody(params: {
   };
 }
 
+function buildChatCompletionBody(params: {
+  options: AdapterOptions;
+  request: CompletionRequestInput;
+}): ChatCompletionCreateBody {
+  const {
+    content,
+    maxTokens: requestMaxTokens = 50,
+    outputSchema: requestOutputSchema,
+    reasoningEffort: requestReasoningEffort = "low",
+    tools,
+  } = params.request;
+  const {
+    reasoning: _extraReasoning,
+    text: _extraText,
+    input: _extraInput,
+    max_output_tokens: _extraMaxOutputTokens,
+    previous_response_id: _extraPreviousResponseId,
+    ...extraBodyParameters
+  } = params.options.extraRequestBodyParameters ?? {};
+
+  return {
+    ...extraBodyParameters,
+    model: params.options.model || "gpt-5-nano",
+    messages: [{ role: "user", content }],
+    max_completion_tokens: requestMaxTokens,
+    reasoning_effort: requestReasoningEffort,
+    response_format: requestOutputSchema
+      ? {
+          type: "json_schema",
+          json_schema: requestOutputSchema,
+        }
+      : undefined,
+    tools: mapChatTools(tools),
+  } as ChatCompletionCreateBody;
+}
+
+async function resolveChatToolCallResult(params: {
+  toolCall?: OpenAIChatToolCall;
+  tools?: CompletionTool[];
+  currentContent?: string;
+  onChunk?: StreamChunkCallback;
+  usedTokens?: UsedTokens;
+  finishReason?: string;
+}): Promise<CompletionResult | null> {
+  if (!params.toolCall) {
+    return null;
+  }
+
+  try {
+    const toolResult = await executeChatToolCall(params.toolCall, params.tools);
+    if (typeof params.currentContent === "string" && toolResult) {
+      const delta = toolResult.startsWith(params.currentContent)
+        ? toolResult.slice(params.currentContent.length)
+        : toolResult;
+      if (delta) {
+        await params.onChunk?.(delta, {
+          type: "output",
+          delta,
+          text: toolResult,
+        });
+      }
+    }
+
+    return {
+      content: toolResult,
+      finishReason: "tool_call",
+      used_tokens: params.usedTokens,
+    };
+  } catch (error: any) {
+    return {
+      error: error?.message || "Tool execution failed",
+      content: params.currentContent || undefined,
+      finishReason: params.finishReason || "tool_call",
+      used_tokens: params.usedTokens,
+    };
+  }
+}
+
+function getChatContent(data: OpenAIChatSuccess): string {
+  const content = data.choices[0]?.message.content;
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return "";
+}
+
 export class OpenAIResponsesService {
   private client: OpenAI | null = null;
 
@@ -288,6 +431,10 @@ export class OpenAIResponsesService {
     request: CompletionRequestInput,
     signal: AbortSignal,
   ): Promise<CompletionResult> {
+    if (this.shouldUseComplitionApi()) {
+      return this.completeWithChatCompletions(request, signal);
+    }
+
     const { tools, onChunk: streamChunkCallback } = request;
     const isStreaming = typeof streamChunkCallback === "function";
     const body = buildResponseBody({
@@ -413,6 +560,156 @@ export class OpenAIResponsesService {
     }
   }
 
+  private async completeWithChatCompletions(
+    request: CompletionRequestInput,
+    signal: AbortSignal,
+  ): Promise<CompletionResult> {
+    const { tools, onChunk: streamChunkCallback } = request;
+    const isStreaming = typeof streamChunkCallback === "function";
+    const body = buildChatCompletionBody({
+      options: this.options,
+      request,
+    });
+
+    let fullContent = "";
+    let finishReason: string | undefined;
+    let usedTokens: UsedTokens | undefined;
+    let toolCall: OpenAIChatToolCall | undefined;
+
+    try {
+      if (!isStreaming) {
+        const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
+          ...body,
+          stream: false,
+        };
+        const data = await this.getClient().chat.completions.create(params, { signal });
+        const choice = data.choices[0];
+        const usedTokens = extractChatUsedTokens(data);
+        const toolCallResult = await resolveChatToolCallResult({
+          toolCall: choice?.message.tool_calls?.[0] as OpenAIChatToolCall | undefined,
+          tools,
+          usedTokens,
+          finishReason: choice?.finish_reason,
+        });
+        if (toolCallResult) {
+          return toolCallResult;
+        }
+
+        return {
+          content: getChatContent(data),
+          finishReason: choice?.finish_reason,
+          used_tokens: usedTokens,
+        };
+      }
+
+      const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
+        ...body,
+        stream: true,
+        stream_options: {
+          include_usage: true,
+          ...(body.stream_options ?? {}),
+        },
+      };
+      const stream = await this.getClient().chat.completions.create(params, { signal });
+      const toolCallDeltas = new Map<number, OpenAIChatToolCall>();
+
+      for await (const chunk of stream) {
+        if (chunk.usage) {
+          usedTokens = extractChatUsedTokens({
+            id: chunk.id,
+            object: "chat.completion",
+            created: chunk.created,
+            model: chunk.model,
+            choices: [],
+            usage: chunk.usage,
+          });
+        }
+
+        const choice = chunk.choices[0];
+        if (!choice) {
+          continue;
+        }
+
+        finishReason = choice.finish_reason || finishReason;
+
+        const delta = choice.delta.content || "";
+        if (delta) {
+          fullContent += delta;
+          await streamChunkCallback?.(delta, {
+            type: "output",
+            delta,
+            text: fullContent,
+          });
+        }
+
+        for (const toolCallDelta of choice.delta.tool_calls ?? []) {
+          const index = toolCallDelta.index;
+          const existing = toolCallDeltas.get(index) ?? {
+            id: toolCallDelta.id || "",
+            type: "function",
+            function: {
+              name: "",
+              arguments: "",
+            },
+          };
+
+          toolCallDeltas.set(index, {
+            ...existing,
+            id: toolCallDelta.id || existing.id,
+            type: "function",
+            function: {
+              name: existing.function.name + (toolCallDelta.function?.name || ""),
+              arguments:
+                existing.function.arguments +
+                (toolCallDelta.function?.arguments || ""),
+            },
+          });
+        }
+      }
+
+      toolCall = toolCallDeltas.values().next().value;
+      const toolCallResult = await resolveChatToolCallResult({
+        toolCall,
+        tools,
+        currentContent: fullContent,
+        onChunk: streamChunkCallback,
+        usedTokens,
+        finishReason,
+      });
+      if (toolCallResult) {
+        return toolCallResult;
+      }
+
+      return {
+        content: fullContent || undefined,
+        finishReason,
+        used_tokens: usedTokens,
+      };
+    } catch (error: any) {
+      if (signal.aborted) {
+        return {
+          error: error?.message || "Generation aborted",
+          content: fullContent || undefined,
+          finishReason: "aborted",
+          used_tokens: usedTokens,
+        };
+      }
+
+      if (isStreaming) {
+        return {
+          error: error?.message || "Streaming failed",
+          content: fullContent || undefined,
+          finishReason,
+          used_tokens: usedTokens,
+        };
+      }
+
+      return {
+        error: error?.message || "OpenAI chat completion request failed",
+      };
+    }
+  }
+
   private getClient() {
     if (!this.client) {
       this.client = new OpenAI({
@@ -422,6 +719,14 @@ export class OpenAIResponsesService {
     }
 
     return this.client;
+  }
+
+  private shouldUseComplitionApi() {
+    if (typeof this.options.useComplitionApi === "boolean") {
+      return this.options.useComplitionApi;
+    }
+
+    return false;
   }
 
   private createResponsesDebugFetch() {
