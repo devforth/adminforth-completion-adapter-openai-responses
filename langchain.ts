@@ -130,7 +130,7 @@ export function createLangChainAgentSpec(params: {
   purpose: AgentModelPurpose;
   configuredBaseUrl?: string;
   clientConfiguration?: Record<string, unknown>;
-  useComplitionApi: boolean;
+  useCompletionApi: boolean;
 }) {
   const extraRequestBodyParameters =
     params.options.extraRequestBodyParameters || {};
@@ -148,10 +148,10 @@ export function createLangChainAgentSpec(params: {
     modelKwargs: normalizedModelKwargs,
   };
 
-  chatOpenAiOptions.useResponsesApi = !params.useComplitionApi;
+  chatOpenAiOptions.useResponsesApi = !params.useCompletionApi;
 
   let supportsResponseContinuation = true;
-  if (params.useComplitionApi) {
+  if (params.useCompletionApi) {
     supportsResponseContinuation = false;
   }
 

@@ -25,13 +25,13 @@ const adapter = new CompletionAdapterOpenAIResponses({
 ```
 
 To use the Chat Completions API instead of the Responses API, set
-`useComplitionApi: true`:
+`useCompletionApi: true`:
 
 ```ts
 const adapter = new CompletionAdapterOpenAIResponses({
 	openAiApiKey: process.env.OPENAI_API_KEY as string,
 	model: "gpt-5-nano",
-	useComplitionApi: true,
+	useCompletionApi: true,
 });
 ```
 
@@ -50,7 +50,7 @@ const adapter = new CompletionAdapterOpenAIResponses({
 ```
 
 If the provider only supports Chat Completions, also set
-`useComplitionApi: true`.
+`useCompletionApi: true`.
 
 The adapter supports:
 

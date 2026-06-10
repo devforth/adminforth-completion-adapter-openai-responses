@@ -29,7 +29,7 @@ export interface AdapterOptions {
    * When omitted, the adapter uses the Responses API, including for custom
    * `baseUrl` providers.
    */
-  useComplitionApi?: boolean;
+  useCompletionApi?: boolean;
 
   /**
    * Model name. Go to https://platform.openai.com/docs/models, select model and copy name.

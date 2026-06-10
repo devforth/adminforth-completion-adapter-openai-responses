@@ -64,9 +64,9 @@ class CompletionAdapterOpenAIResponses
     return this.options.baseUrl;
   }
 
-  private shouldUseComplitionApi() {
-    if (typeof this.options.useComplitionApi === "boolean") {
-      return this.options.useComplitionApi;
+  private shouldUseCompletionApi() {
+    if (typeof this.options.useCompletionApi === "boolean") {
+      return this.options.useCompletionApi;
     }
 
     return false;
@@ -82,7 +82,7 @@ class CompletionAdapterOpenAIResponses
       purpose: params.purpose,
       configuredBaseUrl: this.getConfiguredBaseUrl(),
       clientConfiguration: this.openAi.getClientConfiguration(),
-      useComplitionApi: this.shouldUseComplitionApi(),
+      useCompletionApi: this.shouldUseCompletionApi(),
     });
   }
 

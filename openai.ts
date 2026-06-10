@@ -431,7 +431,7 @@ export class OpenAIResponsesService {
     request: CompletionRequestInput,
     signal: AbortSignal,
   ): Promise<CompletionResult> {
-    if (this.shouldUseComplitionApi()) {
+    if (this.shouldUseCompletionApi()) {
       return this.completeWithChatCompletions(request, signal);
     }
 
@@ -721,9 +721,9 @@ export class OpenAIResponsesService {
     return this.client;
   }
 
-  private shouldUseComplitionApi() {
-    if (typeof this.options.useComplitionApi === "boolean") {
-      return this.options.useComplitionApi;
+  private shouldUseCompletionApi() {
+    if (typeof this.options.useCompletionApi === "boolean") {
+      return this.options.useCompletionApi;
     }
 
     return false;
