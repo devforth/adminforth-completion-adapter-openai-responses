@@ -35,9 +35,14 @@ function getAgentReasoningEffort(
 function buildReasoningConfig(params: {
   reasoning?: ExtraReasoning;
   effort: Exclude<ReasoningEffort, "none"> | ReasoningEffort;
+  includeSummary: boolean;
 }) {
   return {
-    summary: "auto",
+    // `reasoning.summary` is a Responses-API-only field; setting it makes
+    // LangChain force the Responses API even when `useResponsesApi` is false
+    // (see _useResponsesApi). Omit it on the Completions path so the request
+    // actually goes to /chat/completions.
+    ...(params.includeSummary ? { summary: "auto" } : {}),
     effort: params.effort,
     ...(params.reasoning ?? {}),
   };
@@ -141,9 +146,16 @@ export function createLangChainAgentSpec(params: {
     model: params.options.model || "gpt-5-nano",
     apiKey: params.options.openAiApiKey,
     maxTokens: params.maxTokens,
+    // Emit a boolean `strict` on tool definitions instead of LangChain's default
+    // `null` (which it sends when this is unset). OpenAI tolerates `null`, but
+    // stricter OpenAI-compatible providers (e.g. OVH) reject it with
+    // `422 ... tools[0]: invalid type: null, expected a boolean`. `false` is
+    // equivalent to `null` here (non-strict) and applies to both API paths.
+    supportsStrictToolCalling: false,
     reasoning: buildReasoningConfig({
       reasoning,
       effort: getAgentReasoningEffort(params.purpose),
+      includeSummary: !params.useCompletionApi,
     }),
     modelKwargs: normalizedModelKwargs,
   };
