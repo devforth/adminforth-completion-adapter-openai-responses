@@ -108,6 +108,7 @@ function createOpenAiResponsesContinuationMiddleware() {
           ? {
               ...request,
               messages: continuationMessages,
+              systemPrompt: "",
               modelSettings: {
                 ...request.modelSettings,
                 previous_response_id: previousResponseId,
