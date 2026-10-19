@@ -34,7 +34,7 @@
   },
   "peerDependencies": {
     "@langchain/core": "^1.2.5",
-    "adminforth": "^3.0.1",
+    "adminforth": "^4.7.3",
     "langchain": "^1.3.3"
   },
   "release": {
