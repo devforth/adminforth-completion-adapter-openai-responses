@@ -18,9 +18,6 @@ import CompletionAdapterOpenAIResponses from "@adminforth/completion-adapter-ope
 const adapter = new CompletionAdapterOpenAIResponses({
 	openAiApiKey: process.env.OPENAI_API_KEY as string,
 	model: "gpt-6-luna",
-	extraRequestBodyParameters: {
-		temperature: 0.7,
-	},
 });
 ```
 
