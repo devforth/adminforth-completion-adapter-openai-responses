@@ -1,9 +1,9 @@
-import type { AdapterOptions } from "./types.js";
+import { DEFAULT_MODEL, type AdapterOptions } from "./types.js";
 import type {
   CompletionAdapter,
   CompletionTool,
 } from "adminforth";
-import { encoding_for_model, type TiktokenModel } from "tiktoken";
+import { encoding_for_model, get_encoding, type TiktokenModel } from "tiktoken";
 import {
   OpenAIResponsesService,
   type CompletionRequestInput,
@@ -32,13 +32,11 @@ class CompletionAdapterOpenAIResponses
 
     try {
       this.encoding = encoding_for_model(
-        (this.options.model || "gpt-5-nano") as TiktokenModel,
+        (this.options.model || DEFAULT_MODEL) as TiktokenModel,
       );
-    } catch (error) {
-      // console.warn(
-      //   `Failed to initialize tiktoken tokenizer for model "${this.options.model}", falling back to "gpt-5-nano". Error:`,
-      // );
-      this.encoding = encoding_for_model("gpt-5-nano" as TiktokenModel);
+    } catch {
+      // tiktoken does not know GPT-6 models; o200k_base is its newest OpenAI encoding.
+      this.encoding = get_encoding("o200k_base");
     }
   }
 

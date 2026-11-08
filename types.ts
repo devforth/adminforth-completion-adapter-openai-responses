@@ -1,5 +1,8 @@
 import type OpenAI from "openai";
 
+/** Model used when `model` is not set. */
+export const DEFAULT_MODEL = "gpt-6-luna";
+
 export type AdapterExtraRequestBodyParameters = Partial<
   Omit<OpenAI.Responses.ResponseCreateParamsNonStreaming, "stream">
 > &
@@ -33,7 +36,7 @@ export interface AdapterOptions {
 
   /**
    * Model name. Go to https://platform.openai.com/docs/models, select model and copy name.
-   * Default is `gpt-5-nano`.
+   * Default is `gpt-6-luna`.
    */
   model?: string;
 

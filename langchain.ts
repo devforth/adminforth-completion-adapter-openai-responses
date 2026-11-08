@@ -1,7 +1,7 @@
 import { AIMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
 import { createMiddleware } from "langchain";
-import type { AdapterOptions } from "./types.js";
+import { DEFAULT_MODEL, type AdapterOptions } from "./types.js";
 
 type ReasoningEffort =
   | "none"
@@ -144,7 +144,7 @@ export function createLangChainAgentSpec(params: {
   const normalizedModelKwargs = { ...modelKwargs };
 
   const chatOpenAiOptions: Record<string, unknown> = {
-    model: params.options.model || "gpt-5-nano",
+    model: params.options.model || DEFAULT_MODEL,
     apiKey: params.options.openAiApiKey,
     maxTokens: params.maxTokens,
     // Emit a boolean `strict` on tool definitions instead of LangChain's default

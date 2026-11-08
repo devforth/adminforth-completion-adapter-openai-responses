@@ -3,7 +3,7 @@ import type {
   CompletionTool,
 } from "adminforth";
 import OpenAI from "openai";
-import type { AdapterOptions } from "./types.js";
+import { DEFAULT_MODEL, type AdapterOptions } from "./types.js";
 
 export type StreamChunkCallback = (
   chunk: string,
@@ -293,7 +293,7 @@ function buildResponseBody(params: {
 
   return {
     ...extraBodyParameters,
-    model: params.options.model || "gpt-5-nano",
+    model: params.options.model || DEFAULT_MODEL,
     input: content,
     max_output_tokens: requestMaxTokens,
     text: requestOutputSchema
@@ -341,7 +341,7 @@ function buildChatCompletionBody(params: {
 
   return {
     ...extraBodyParameters,
-    model: params.options.model || "gpt-5-nano",
+    model: params.options.model || DEFAULT_MODEL,
     messages: [{ role: "user", content }],
     max_completion_tokens: requestMaxTokens,
     reasoning_effort: requestReasoningEffort,

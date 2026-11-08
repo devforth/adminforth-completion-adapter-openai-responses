@@ -17,7 +17,7 @@ import CompletionAdapterOpenAIResponses from "@adminforth/completion-adapter-ope
 
 const adapter = new CompletionAdapterOpenAIResponses({
 	openAiApiKey: process.env.OPENAI_API_KEY as string,
-	model: "gpt-5-nano",
+	model: "gpt-6-luna",
 	extraRequestBodyParameters: {
 		temperature: 0.7,
 	},
@@ -30,7 +30,7 @@ To use the Chat Completions API instead of the Responses API, set
 ```ts
 const adapter = new CompletionAdapterOpenAIResponses({
 	openAiApiKey: process.env.OPENAI_API_KEY as string,
-	model: "gpt-5-nano",
+	model: "gpt-6-luna",
 	useCompletionApi: true,
 });
 ```
